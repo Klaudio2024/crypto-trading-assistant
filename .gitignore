@@ -1,2 +1,5 @@
-# Created by pytest automatically.
-*
+trading.db
+.env
+.venv/
+__pycache__/
+*.pyc
