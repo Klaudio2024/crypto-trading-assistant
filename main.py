@@ -3,9 +3,11 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from uuid import uuid4
 from datetime import datetime, timezone
-from .models import RiskSettings, TradePlan
-from . import db
-from .risk import position_size, validate, RiskError
+
+from models import RiskSettings, TradePlan
+import db
+from risk import position_size, validate, RiskError
+
 app=FastAPI(title='Crypto Trading Assistant',version='0.2.0')
 S=RiskSettings()
 @app.on_event('startup')
@@ -46,3 +48,164 @@ def close(position_id:str,p:Price):
  pos=db.close_by_id(position_id)
  if not pos: raise HTTPException(404,'Open paper position not found.')
  gross=p.price*pos['qty']; fee=gross*S.fee_rate; pnl=gross-fee-(pos['entry']*pos['qty'])-pos['entry_fee']-pos['entry_slippage']; a=db.account(); cash=a['cash']+gross-fee; ps=[x for x in db.open_positions() if x['id']!=position_id]; eq=cash+sum(x['qty']*x['entry'] for x in ps); peak=max(a['equity_peak'],eq); daily_loss=max(0,a['day_start_equity']-eq); db.save_account(cash=cash,equity_peak=peak,daily_locked=int(daily_loss>=a['day_start_equity']*S.daily_loss_limit),drawdown_locked=int((peak-eq)/peak>=S.max_drawdown)); db.close_position(position_id,p.price,fee,'MANUAL_CLOSE'); db.event('PAPER_EXIT',pos['symbol'],pos['signal_id'],exit_price=p.price,net_pnl=round(pnl,4),reason='MANUAL_CLOSE'); return {'closed':True,'net_pnl':round(pnl,4)}
+try:
+    from .market_data import MarketDataError, quote
+    from .strategy import evaluate
+except ImportError:
+    from market_data import MarketDataError, quote
+    from strategy import evaluate
+
+
+@app.get("/api/market")
+def market(symbol: str = "BTC/USDT"):
+    try:
+        return quote(symbol)
+    except MarketDataError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        )
+
+
+@app.get("/api/strategy")
+def strategy_status(symbol: str = "BTC/USDT"):
+    decision = evaluate(symbol)
+
+    db.event(
+        "STRATEGY_DECISION",
+        decision["symbol"],
+        None,
+        action=decision["action"],
+        confidence=decision["confidence"],
+        reason=decision["reason"],
+    )
+
+    return decision
+
+
+@app.post("/api/strategy/paper")
+def strategy_paper(symbol: str = "BTC/USDT"):
+    decision = evaluate(symbol)
+
+    db.event(
+        "STRATEGY_DECISION",
+        decision["symbol"],
+        None,
+        action=decision["action"],
+        confidence=decision["confidence"],
+        reason=decision["reason"],
+    )
+
+    if decision["action"] != "BUY":
+        return {
+            "opened": False,
+            "decision": decision,
+            "reason": (
+                "No paper position was opened because "
+                "the strategy did not return BUY."
+            ),
+        }
+
+    signal = Signal(
+        signal_id=str(uuid4()),
+        symbol=str(decision["symbol"]),
+        entry=float(decision["entry"]),
+        stop=float(decision["stop"]),
+        target=float(decision["target"]),
+        confidence=int(decision["confidence"]),
+        regime="TRENDING",
+        reason=str(decision["reason"]),
+        timeframe=str(decision["timeframe"]),
+        market_fresh=bool(decision["market_fresh"]),
+    )
+
+    result = paper(signal)
+
+    return {
+        "opened": bool(result["accepted"]),
+        "decision": decision,
+        "paper_result": result,
+    }
+
+
+@app.post("/api/market/monitor")
+def monitor_positions():
+    results = []
+
+    for position in db.open_positions():
+        try:
+            current_quote = quote(position["symbol"])
+            exit_price = float(current_quote["bid"])
+
+            if exit_price <= float(position["stop"]):
+                result = close(
+                    position["id"],
+                    Price(price=exit_price),
+                )
+
+                db.event(
+                    "STOP_LOSS_TRIGGERED",
+                    position["symbol"],
+                    position["signal_id"],
+                    exit_price=exit_price,
+                    stop=float(position["stop"]),
+                )
+
+                results.append(
+                    {
+                        "position_id": position["id"],
+                        "action": "STOP_LOSS",
+                        "exit_price": exit_price,
+                        "result": result,
+                    }
+                )
+
+            elif exit_price >= float(position["target"]):
+                result = close(
+                    position["id"],
+                    Price(price=exit_price),
+                )
+
+                db.event(
+                    "TAKE_PROFIT_TRIGGERED",
+                    position["symbol"],
+                    position["signal_id"],
+                    exit_price=exit_price,
+                    target=float(position["target"]),
+                )
+
+                results.append(
+                    {
+                        "position_id": position["id"],
+                        "action": "TAKE_PROFIT",
+                        "exit_price": exit_price,
+                        "result": result,
+                    }
+                )
+
+            else:
+                results.append(
+                    {
+                        "position_id": position["id"],
+                        "action": "HOLD",
+                        "market_price": exit_price,
+                        "stop": float(position["stop"]),
+                        "target": float(position["target"]),
+                    }
+                )
+
+        except MarketDataError as exc:
+            results.append(
+                {
+                    "position_id": position["id"],
+                    "action": "NO_ACTION",
+                    "reason": str(exc),
+                }
+            )
+
+    return {
+        "mode": "PAPER_TRADING",
+        "live_execution": False,
+        "checked_positions": len(results),
+        "results": results,
+    }
