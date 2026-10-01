@@ -1,4 +1,5 @@
-from .models import RiskSettings, TradePlan
+from models import RiskSettings, TradePlan
+
 class RiskError(ValueError): pass
 def position_size(settings, equity, cash, entry, stop):
  if entry<=0 or stop<=0 or stop>=entry: raise RiskError('Invalid BUY entry or Stop-Loss.')
