@@ -3,3 +3,8 @@ trading.db
 .venv/
 __pycache__/
 *.pyc
+
+# Local development artifacts
+.vscode/
+local-backups/
+*.db
