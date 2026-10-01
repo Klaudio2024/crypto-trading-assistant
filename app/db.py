@@ -11,7 +11,7 @@ def init():
  CREATE TABLE IF NOT EXISTS positions (id TEXT PRIMARY KEY, signal_id TEXT UNIQUE NOT NULL, symbol TEXT NOT NULL, qty REAL NOT NULL, entry REAL NOT NULL, stop REAL NOT NULL, target REAL NOT NULL, entry_fee REAL NOT NULL, entry_slippage REAL NOT NULL, opened_at TEXT NOT NULL, status TEXT NOT NULL, close_price REAL, exit_fee REAL, exit_reason TEXT, closed_at TEXT);
  CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, event TEXT NOT NULL, symbol TEXT, signal_id TEXT, details TEXT NOT NULL);
  """);
- if not c.execute('SELECT 1 FROM account WHERE id=1').fetchone(): c.execute('INSERT INTO account VALUES(1,1000,1000,1000,?,?,0,0,0,?)',(now()[:10],now()))
+ if not c.execute('SELECT 1 FROM account WHERE id=1').fetchone(): c.execute('INSERT INTO account VALUES(1,1000,1000,1000,?,0,0,0,?)',(now()[:10],now()))
  c.commit(); c.close()
 def event(event,symbol=None,signal_id=None,**details):
  c=connect(); c.execute('INSERT INTO journal(ts,event,symbol,signal_id,details) VALUES(?,?,?,?,?)',(now(),event,symbol,signal_id,json.dumps(details))); c.commit(); c.close()
