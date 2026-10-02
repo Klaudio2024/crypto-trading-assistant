@@ -3,15 +3,24 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from uuid import uuid4
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 from models import RiskSettings, TradePlan
 import db
 from risk import position_size, validate, RiskError
 
-app=FastAPI(title='Crypto Trading Assistant',version='0.2.0')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init()
+    yield
+
+
+app=FastAPI(
+    title='Crypto Trading Assistant',
+    version='0.2.0',
+    lifespan=lifespan,
+)
 S=RiskSettings()
-@app.on_event('startup')
-def startup(): db.init()
 class Signal(BaseModel):
  signal_id:str|None=None; symbol:str='BTC/USDT'; entry:float=60000; stop:float=59000; target:float=62000; confidence:int=Field(70,ge=0,le=100); regime:str='TRENDING'; reason:str='Manual paper-test signal'; timeframe:str='15m'; market_fresh:bool=True
 class Price(BaseModel): price:float=Field(gt=0)
