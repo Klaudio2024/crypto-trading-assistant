@@ -209,3 +209,23 @@ def monitor_positions():
         "checked_positions": len(results),
         "results": results,
     }
+from ai_service import ai_status as get_ai_status
+from ai_service import analyze_symbol
+
+
+@app.get("/api/ai/status")
+def ai_status_endpoint():
+    return {
+        "mode": "PAPER_TRADING",
+        "live_execution": False,
+        "ai": get_ai_status(),
+    }
+
+
+@app.get("/api/ai/analyze")
+def ai_analyze_endpoint(symbol: str = "BTC/USDT"):
+    return {
+        "mode": "PAPER_TRADING",
+        "live_execution": False,
+        "analysis": analyze_symbol(symbol),
+    }
