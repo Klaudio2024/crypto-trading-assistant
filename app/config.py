@@ -62,10 +62,10 @@ def load_settings() -> Settings:
     return Settings(
         initial_capital=env_float("INITIAL_CAPITAL", 1000.0),
         risk_per_trade=env_float("RISK_PER_TRADE", 0.005),
-        daily_loss_limit=env_float("DAILY_LOSS_LIMIT", 0.02),
+        daily_loss_limit=env_float("DAILY_LOSS_LIMIT", 0.015),
         max_drawdown=env_float("MAX_DRAWDOWN", 0.10),
         max_open_positions=env_int("MAX_OPEN_POSITIONS", 3),
-        max_total_exposure=env_float("MAX_TOTAL_EXPOSURE", 0.30),
+        max_total_exposure=env_float("MAX_TOTAL_EXPOSURE", 0.50),
         fee_rate=env_float("FEE_RATE", 0.001),
         slippage_rate=env_float("SLIPPAGE_RATE", 0.0005),
         min_notional=env_float("MIN_NOTIONAL", 10.0),
