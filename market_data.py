@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from app.config import settings
 
 
 BASE_URL = "https://api.binance.com"
@@ -16,9 +17,17 @@ ALLOWED_SYMBOLS = {
 }
 
 ALLOWED_INTERVALS = {
+    "5m",
     "15m",
     "1h",
     "4h",
+}
+
+INTERVAL_SECONDS = {
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
 }
 
 
@@ -177,6 +186,9 @@ def market_snapshot(
             tz=timezone.utc,
         ).isoformat(),
         "last_close": latest_closed_candle.close,
-        "market_fresh": True,
+        "market_fresh": (
+            int(time.time() * 1000) - latest_closed_candle.close_time
+            <= (INTERVAL_SECONDS[interval] + settings.stale_seconds) * 1000
+        ),
         "candles": candles,
     }
