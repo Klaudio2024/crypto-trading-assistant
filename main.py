@@ -29,8 +29,7 @@ def journal(): return db.journal()
 def stop(): db.save_account(emergency_locked=1); db.event('EMERGENCY_STOP'); return {'status':'LOCKED','message':'Emergency Stop activated. Existing paper positions remain open; no new entries are allowed.'}
 @app.post('/api/restart-paper')
 def restart(): db.save_account(emergency_locked=0); db.event('PAPER_RESTART'); return {'status':'PAPER_TRADING','message':'Paper mode restarted. Daily and drawdown locks remain protected.'}
-@app.post('/api/paper-signal')
-def paper(s:Signal):
+def _execute_paper_signal(s: Signal):
  db.init(); a=db.account(); ps=db.open_positions(); sid=s.signal_id or str(uuid4()); plan=TradePlan(sid,s.symbol,s.entry,s.stop,s.target,s.confidence,s.regime,s.reason,s.timeframe)
  if db.signal_exists(sid): db.event('SIGNAL_REJECTED',s.symbol,sid,reason='Duplicate signal ID'); return {'accepted':False,'reason':'Trade rejected because this signal was already processed.'}
  ok,reason=validate(S,plan,a,ps,s.market_fresh)
@@ -119,7 +118,7 @@ def strategy_paper(symbol: str = "BTC/USDT"):
         market_fresh=bool(decision["market_fresh"]),
     )
 
-    result = paper(signal)
+    result = _execute_paper_signal(signal)
 
     return {
         "opened": bool(result["accepted"]),
