@@ -1,36 +1,295 @@
-import sqlite3, json, uuid
+import json
+import sqlite3
 from datetime import datetime, timezone
-DB='trading.db'
-def now(): return datetime.now(timezone.utc).isoformat()
+
+DB = "trading.db"
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
 def connect():
- c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
+    connection = sqlite3.connect(DB)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _add_column_if_missing(connection, table, column, definition):
+    columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in columns:
+        connection.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        )
+
+
 def init():
- c=connect();
- c.executescript("""
- CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY CHECK(id=1), cash REAL NOT NULL, equity_peak REAL NOT NULL, day_start_equity REAL NOT NULL, day_key TEXT NOT NULL, emergency_locked INTEGER NOT NULL DEFAULT 0, daily_locked INTEGER NOT NULL DEFAULT 0, drawdown_locked INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS positions (id TEXT PRIMARY KEY, signal_id TEXT UNIQUE NOT NULL, symbol TEXT NOT NULL, qty REAL NOT NULL, entry REAL NOT NULL, stop REAL NOT NULL, target REAL NOT NULL, entry_fee REAL NOT NULL, entry_slippage REAL NOT NULL, opened_at TEXT NOT NULL, status TEXT NOT NULL, close_price REAL, exit_fee REAL, exit_reason TEXT, closed_at TEXT);
- CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, event TEXT NOT NULL, symbol TEXT, signal_id TEXT, details TEXT NOT NULL);
- """);
- if not c.execute('SELECT 1 FROM account WHERE id=1').fetchone(): c.execute('INSERT INTO account VALUES(1,1000,1000,1000,?,?,0,0,0,?)',(now()[:10],now()))
- c.commit(); c.close()
-def event(event,symbol=None,signal_id=None,**details):
- c=connect(); c.execute('INSERT INTO journal(ts,event,symbol,signal_id,details) VALUES(?,?,?,?,?)',(now(),event,symbol,signal_id,json.dumps(details))); c.commit(); c.close()
+    connection = connect()
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS account (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            cash REAL NOT NULL,
+            equity_peak REAL NOT NULL,
+            day_start_equity REAL NOT NULL,
+            day_key TEXT NOT NULL,
+            emergency_locked INTEGER NOT NULL DEFAULT 0,
+            daily_locked INTEGER NOT NULL DEFAULT 0,
+            drawdown_locked INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            realized_pnl REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS positions (
+            id TEXT PRIMARY KEY,
+            signal_id TEXT UNIQUE NOT NULL,
+            symbol TEXT NOT NULL,
+            qty REAL NOT NULL,
+            entry REAL NOT NULL,
+            stop REAL NOT NULL,
+            target REAL NOT NULL,
+            entry_fee REAL NOT NULL,
+            entry_slippage REAL NOT NULL,
+            opened_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            close_price REAL,
+            exit_fee REAL,
+            exit_slippage REAL NOT NULL DEFAULT 0,
+            realized_pnl REAL,
+            exit_reason TEXT,
+            closed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            event TEXT NOT NULL,
+            symbol TEXT,
+            signal_id TEXT,
+            details TEXT NOT NULL
+        );
+        """
+    )
+
+    _add_column_if_missing(
+        connection,
+        "account",
+        "realized_pnl",
+        "REAL NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        connection,
+        "positions",
+        "exit_slippage",
+        "REAL NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        connection,
+        "positions",
+        "realized_pnl",
+        "REAL",
+    )
+
+    account_exists = connection.execute(
+        "SELECT 1 FROM account WHERE id = 1"
+    ).fetchone()
+
+    if not account_exists:
+        timestamp = now()
+        connection.execute(
+            """
+            INSERT INTO account (
+                id, cash, equity_peak, day_start_equity, day_key,
+                emergency_locked, daily_locked, drawdown_locked,
+                updated_at, realized_pnl
+            )
+            VALUES (1, 1000, 1000, 1000, ?, 0, 0, 0, ?, 0)
+            """,
+            (timestamp[:10], timestamp),
+        )
+
+    connection.commit()
+    connection.close()
+
+
+def event(event, symbol=None, signal_id=None, **details):
+    connection = connect()
+    connection.execute(
+        """
+        INSERT INTO journal (ts, event, symbol, signal_id, details)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (now(), event, symbol, signal_id, json.dumps(details)),
+    )
+    connection.commit()
+    connection.close()
+
+
 def account():
- c=connect(); r=dict(c.execute('SELECT * FROM account WHERE id=1').fetchone()); c.close(); return r
+    connection = connect()
+    row = connection.execute(
+        "SELECT * FROM account WHERE id = 1"
+    ).fetchone()
+    connection.close()
+    return dict(row)
+
+
 def save_account(**changes):
- a=account(); a.update(changes); a['updated_at']=now(); c=connect(); c.execute('UPDATE account SET cash=?,equity_peak=?,day_start_equity=?,day_key=?,emergency_locked=?,daily_locked=?,drawdown_locked=?,updated_at=? WHERE id=1',(a['cash'],a['equity_peak'],a['day_start_equity'],a['day_key'],a['emergency_locked'],a['daily_locked'],a['drawdown_locked'],a['updated_at'])); c.commit(); c.close()
+    allowed_fields = {
+        "cash",
+        "equity_peak",
+        "day_start_equity",
+        "day_key",
+        "emergency_locked",
+        "daily_locked",
+        "drawdown_locked",
+        "realized_pnl",
+    }
+
+    invalid_fields = set(changes) - allowed_fields
+    if invalid_fields:
+        raise ValueError(
+            f"Invalid account fields: {', '.join(sorted(invalid_fields))}"
+        )
+
+    if not changes:
+        return
+
+    changes["updated_at"] = now()
+    fields = list(changes)
+    assignments = ", ".join(f"{field} = ?" for field in fields)
+    values = [changes[field] for field in fields]
+
+    connection = connect()
+    connection.execute(
+        f"UPDATE account SET {assignments} WHERE id = 1",
+        values,
+    )
+    connection.commit()
+    connection.close()
+
+
 def open_positions():
- c=connect(); rows=[dict(x) for x in c.execute("SELECT * FROM positions WHERE status='OPEN' ORDER BY opened_at DESC")]; c.close(); return rows
+    connection = connect()
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM positions WHERE status = 'OPEN' ORDER BY opened_at DESC"
+        )
+    ]
+    connection.close()
+    return rows
+
+
 def signal_exists(signal_id):
- c=connect(); x=c.execute('SELECT 1 FROM positions WHERE signal_id=?',(signal_id,)).fetchone(); c.close(); return bool(x)
-def add_position(p):
- c=connect(); c.execute('INSERT INTO positions(id,signal_id,symbol,qty,entry,stop,target,entry_fee,entry_slippage,opened_at,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(p['id'],p['signal_id'],p['symbol'],p['qty'],p['entry'],p['stop'],p['target'],p['entry_fee'],p['entry_slippage'],now(),'OPEN')); c.commit(); c.close()
-def close_position(pid,price,fee,reason):
- c=connect(); c.execute("UPDATE positions SET status='CLOSED',close_price=?,exit_fee=?,exit_reason=?,closed_at=? WHERE id=? AND status='OPEN'",(price,fee,reason,now(),pid)); c.commit(); c.close()
+    connection = connect()
+    row = connection.execute(
+        "SELECT 1 FROM positions WHERE signal_id = ?",
+        (signal_id,),
+    ).fetchone()
+    connection.close()
+    return bool(row)
+
+
+def add_position(position):
+    connection = connect()
+    connection.execute(
+        """
+        INSERT INTO positions (
+            id, signal_id, symbol, qty, entry, stop, target,
+            entry_fee, entry_slippage, opened_at, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+        """,
+        (
+            position["id"],
+            position["signal_id"],
+            position["symbol"],
+            position["qty"],
+            position["entry"],
+            position["stop"],
+            position["target"],
+            position["entry_fee"],
+            position["entry_slippage"],
+            now(),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
+def calculate_realized_pnl(position, close_price, exit_fee, exit_slippage=0.0):
+    gross_pnl = (float(close_price) - float(position["entry"])) * float(
+        position["qty"]
+    )
+    total_costs = (
+        float(position["entry_fee"])
+        + float(position["entry_slippage"])
+        + float(exit_fee)
+        + float(exit_slippage)
+    )
+    return gross_pnl - total_costs
+
+
+def close_position(pid, price, fee, reason, slippage=0.0):
+    position = close_by_id(pid)
+    if not position:
+        return None
+
+    realized_pnl = calculate_realized_pnl(
+        position,
+        close_price=price,
+        exit_fee=fee,
+        exit_slippage=slippage,
+    )
+
+    connection = connect()
+    cursor = connection.execute(
+        """
+        UPDATE positions
+        SET
+            status = 'CLOSED',
+            close_price = ?,
+            exit_fee = ?,
+            exit_slippage = ?,
+            realized_pnl = ?,
+            exit_reason = ?,
+            closed_at = ?
+        WHERE id = ? AND status = 'OPEN'
+        """,
+        (price, fee, slippage, realized_pnl, reason, now(), pid),
+    )
+    connection.commit()
+    connection.close()
+
+    return realized_pnl if cursor.rowcount == 1 else None
+
+
 def close_by_id(pid):
- c=connect(); r=c.execute("SELECT * FROM positions WHERE id=? AND status='OPEN'",(pid,)).fetchone(); c.close(); return dict(r) if r else None
+    connection = connect()
+    row = connection.execute(
+        "SELECT * FROM positions WHERE id = ? AND status = 'OPEN'",
+        (pid,),
+    ).fetchone()
+    connection.close()
+    return dict(row) if row else None
+
+
 def journal():
- c=connect(); rows=[]
- for x in c.execute('SELECT * FROM journal ORDER BY id DESC LIMIT 50'):
-  d=dict(x); d['details']=json.loads(d['details']); rows.append(d)
- c.close(); return rows
+    connection = connect()
+    rows = []
+
+    for row in connection.execute(
+        "SELECT * FROM journal ORDER BY id DESC LIMIT 50"
+    ):
+        item = dict(row)
+        item["details"] = json.loads(item["details"])
+        rows.append(item)
+
+    connection.close()
+    return rows
