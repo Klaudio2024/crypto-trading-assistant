@@ -293,3 +293,72 @@ def journal():
 
     connection.close()
     return rows
+
+def open_paper_position_transaction(position, cash_after, event_details):
+    """Atomically debit cash, create an OPEN paper position, and journal it."""
+    connection = connect()
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        existing_signal = connection.execute(
+            "SELECT 1 FROM positions WHERE signal_id = ?",
+            (position["signal_id"],),
+        ).fetchone()
+
+        if existing_signal:
+            raise ValueError("Duplicate signal ID.")
+
+        connection.execute(
+            """
+            UPDATE account
+            SET cash = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (cash_after, now()),
+        )
+
+        connection.execute(
+            """
+            INSERT INTO positions (
+                id, signal_id, symbol, qty, entry, stop, target,
+                entry_fee, entry_slippage, opened_at, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            """,
+            (
+                position["id"],
+                position["signal_id"],
+                position["symbol"],
+                position["qty"],
+                position["entry"],
+                position["stop"],
+                position["target"],
+                position["entry_fee"],
+                position["entry_slippage"],
+                now(),
+            ),
+        )
+
+        connection.execute(
+            """
+            INSERT INTO journal (ts, event, symbol, signal_id, details)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                now(),
+                "PAPER_ENTRY",
+                position["symbol"],
+                position["signal_id"],
+                json.dumps(event_details),
+            ),
+        )
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()

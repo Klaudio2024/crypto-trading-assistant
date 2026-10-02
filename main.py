@@ -49,7 +49,29 @@ def _execute_paper_signal(s: Signal):
  gross=q*s.entry; fee=gross*S.fee_rate; slip=gross*S.slippage_rate
  if gross< S.min_notional or q<=0: reason='Trade rejected because quantity or notional is below the paper-exchange minimum.'; db.event('SIGNAL_REJECTED',s.symbol,sid,reason=reason); return {'accepted':False,'reason':reason}
  if gross+fee+slip>a['cash']: reason='Trade rejected because available virtual balance is insufficient.'; db.event('SIGNAL_REJECTED',s.symbol,sid,reason=reason); return {'accepted':False,'reason':reason}
- db.save_account(cash=a['cash']-gross-fee-slip); db.add_position({'id':str(uuid4()),'signal_id':sid,'symbol':s.symbol,'qty':q,'entry':s.entry,'stop':s.stop,'target':s.target,'entry_fee':fee,'entry_slippage':slip}); db.event('PAPER_ENTRY',s.symbol,sid,quantity=q,entry=s.entry,stop=s.stop,target=s.target,fee=fee,slippage=slip,reason=s.reason)
+ db.open_paper_position_transaction(
+  {
+   'id': str(uuid4()),
+   'signal_id': sid,
+   'symbol': s.symbol,
+   'qty': q,
+   'entry': s.entry,
+   'stop': s.stop,
+   'target': s.target,
+   'entry_fee': fee,
+   'entry_slippage': slip,
+  },
+  cash_after=a['cash'] - gross - fee - slip,
+  event_details={
+   'quantity': q,
+   'entry': s.entry,
+   'stop': s.stop,
+   'target': s.target,
+   'fee': fee,
+   'slippage': slip,
+   'reason': s.reason,
+  },
+ )
  return {'accepted':True,'signal_id':sid,'quantity':q,'risk_usdt':round(e*S.risk_per_trade,2),'estimated_fee':round(fee,4),'estimated_slippage':round(slip,4),'reason':'Paper position opened after all risk checks.'}
 @app.post('/api/positions/{position_id}/close')
 def close(position_id:str,p:Price):
